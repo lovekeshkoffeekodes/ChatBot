@@ -1,4 +1,5 @@
 .venv/
 .env
 
-chatbot.db 
+chatbot.db
+
