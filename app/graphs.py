@@ -18,7 +18,6 @@ tools = [search_tool]
 api_key = os.getenv("GROQ_API_KEY")
 model_name = os.getenv("MODEL_NAME")
 
-
 from  langchain_groq import ChatGroq
 model = ChatGroq(
     api_key=api_key,

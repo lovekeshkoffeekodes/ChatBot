@@ -10,7 +10,7 @@ import os
 from dotenv import load_dotenv
 load_dotenv()  
 
-API_URL = "http://127.0.0.1:8000/api/v1/chat/stream/test"
+API_URL = "http://127.0.0.1:8000/chat/stream"
 TIMEOUT_SECONDS = 25  # Slightly higher than backend timeout
 MAX_INPUT_LENGTH = 2000
 
@@ -53,7 +53,7 @@ st.caption("Intent-aware • Retrieval-augmented • SaaS-ready architecture")
 # Session State
 # ============================================================
 if 'chat_thread' not in st.session_state:
-    response = requests.get("http://127.0.0.1:8000/api/v1/chat/stream/threads")
+    response = requests.get("http://127.0.0.1:8000/conversations")
     threads_data = response.json().get("threads", [])
     # API now returns list of dicts: {thread_id, chat_title, created_at}
     # Extract plain thread_id strings for internal use
@@ -97,121 +97,184 @@ if "last_request_id" not in st.session_state:
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
-st.sidebar.title("ChatBot")
+# ============================================================
+# Sidebar
+# ============================================================
+
+st.sidebar.title("Weave")
 if st.sidebar.button('New Chat'):
     reset_chat()
-
-# ============================================================
-# Input Form
-# ============================================================
-# if st.sidebar.button("New Chat"):
-#   st.session_state.thread_id = str(uuid.uuid4())
-#   st.session_state.messages = []  # clear UI messages if you track them separately
-#   st.rerun()
-
+st.sidebar.markdown("---")
 st.sidebar.header('My Conversations')
 
-for thread_id in st.session_state['chat_thread']:
+for thread_id in list(st.session_state['chat_thread']):
     # 1. Look up the title, fallback to the string version of UUID if not found
     button_label = st.session_state['chat_titles'].get(thread_id, str(thread_id))
-
     is_active = (thread_id == st.session_state['thread_id'])
-
     button_type = "primary" if is_active else "secondary" 
-    
-    if st.sidebar.button(button_label, key=str(thread_id), type=button_type):
-        st.session_state['thread_id']= thread_id
-        response = requests.get(f"http://127.0.0.1:8000/api/v1/chat/stream/history/{st.session_state['thread_id']}")
-        messages = response.json().get("messages", [])
+    col_title, col_menu = st.sidebar.columns([0.75, 0.25])
 
-        temp_message=[]
+    with col_title:
+        if st.sidebar.button(button_label, key=str(thread_id), type=button_type):
+            st.session_state['thread_id']= thread_id 
+            st.session_state['menu_thread_id'] = None
+            st.session_state['editing_thread_id'] = None
+            st.session_state['deleting_thread_id'] = None
+            try:
+                response = requests.get(f"http://127.0.0.1:8000/conversations/{st.session_state['thread_id']}/messsages")
+                messages = response.json().get("messages", [])
 
-        for msg in messages:
-            role = 'user' if msg.get('type') == 'human' else 'assistant'
-            speaker = 'You' if role == 'user' else 'Assistant'
-            temp_message.append((speaker, msg.get('content', '')))
+                temp_message=[]
 
-        st.session_state['history']= temp_message
-        st.rerun()
+                for msg in messages:
+                    msg_type = msg.get('type', '').lower()
+                    msg_role = msg.get('role', '').lower()
 
-with st.form("chat_form", clear_on_submit=True):
-    user_input = st.text_input(
-        "Ask your question",
-        max_chars=MAX_INPUT_LENGTH,
-        placeholder="e.g., How do I upgrade my billing plan?",
-    )
+                    is_user = msg_type in ['human', 'user'] or msg_role in ['human', 'user']
+                    speaker = 'You' if is_user else 'Assistant'
 
-    submitted = st.form_submit_button("Send")
+                    temp_message.append((speaker, msg.get('content', '')))
+
+                st.session_state['history']= temp_message
+            except RequestException:
+                st.error("Failed to load chat history.")
+            st.rerun()
+    with col_menu:
+        if st.button("...", key=f"menu_btn_{thread_id}", help="Options"):
+            # Toggle the menu state for this specific thread
+            if st.session_state.get('menu_thread_id') == thread_id:
+                st.session_state['menu_thread_id'] = None
+            else:
+                st.session_state['menu_thread_id'] = thread_id
+                st.session_state['editing_thread_id'] = None
+                st.session_state['deleting_thread_id'] = None
+            st.rerun()
+
+    # If this thread's "..." menu is opened, render options directly below it
+    if st.session_state.get('menu_thread_id') == thread_id:
+        
+        # 1. Renaming state
+        if st.session_state.get('editing_thread_id') == thread_id:
+            new_title = st.sidebar.text_input("New title", value=button_label, key=f"input_rename_{thread_id}")
+            col_save, col_cancel = st.sidebar.columns(2)
+            with col_save:
+                if st.sidebar.button("Save", key=f"save_title_{thread_id}", use_container_width=True):
+                    try:
+                        patch_url = f"http://127.0.0.1:8000/conversations/{thread_id}"
+                        resp = requests.patch(patch_url, json={"chat_title": new_title.strip()})
+                        if resp.status_code == 200:
+                            st.session_state['chat_titles'][thread_id] = new_title.strip()
+                            st.session_state['menu_thread_id'] = None
+                            st.session_state['editing_thread_id'] = None
+                            st.success("Title updated!")
+                            st.rerun()
+                    except RequestException:
+                        st.sidebar.error("Failed to update.")
+            with col_cancel:
+                if st.sidebar.button("Cancel", key=f"cancel_rename_{thread_id}", use_container_width=True):
+                    st.session_state['editing_thread_id'] = None
+                    st.rerun()
+
+        # 2. Delete confirmation state
+        elif st.session_state.get('deleting_thread_id') == thread_id:
+            st.sidebar.warning("Delete this chat?")
+            col_yes, col_no = st.sidebar.columns(2)
+            with col_yes:
+                if st.sidebar.button("Yes", key=f"del_yes_{thread_id}", use_container_width=True):
+                    try:
+                        delete_url = f"http://127.0.0.1:8000/api/v1/chat/stream/conversations/{thread_id}"
+                        response = requests.delete(delete_url)
+                        if response.status_code == 200:
+                            st.session_state['chat_thread'].remove(thread_id)
+                            if thread_id in st.session_state['chat_titles']:
+                                del st.session_state['chat_titles'][thread_id]
+                            st.session_state['menu_thread_id'] = None
+                            st.session_state['deleting_thread_id'] = None
+                            if st.session_state['thread_id'] == thread_id:
+                                reset_chat()
+                            st.success("Deleted.")
+                            st.rerun()
+                    except RequestException:
+                        st.sidebar.error("Failed to delete.")
+            with col_no:
+                if st.sidebar.button("No", key=f"del_no_{thread_id}", use_container_width=True):
+                    st.session_state['deleting_thread_id'] = None
+                    st.rerun()
+
+        # 3. Default menu options (Edit / Delete)
+        else:
+            col_opt1, col_opt2 = st.sidebar.columns(2)
+            with col_opt1:
+                if st.sidebar.button("✏️ Edit", key=f"opt_edit_{thread_id}", use_container_width=True):
+                    st.session_state['editing_thread_id'] = thread_id
+                    st.rerun()
+            with col_opt2:
+                if st.sidebar.button("🗑️ Delete", key=f"opt_del_{thread_id}", use_container_width=True):
+                    st.session_state['deleting_thread_id'] = thread_id
+                    st.rerun()
+        
+        st.sidebar.markdown("---")
+
+# ============================================================
+# Chat History Rendering (Native Chat Bubbles)
+# ============================================================
+for speaker, text in st.session_state.history:
+    role = "user" if speaker == "You" else "ai"
+    with st.chat_message(role):
+        st.markdown(text)
 
 
-if submitted:
+if user_input := st.chat_input("Ask your question...", max_chars=MAX_INPUT_LENGTH):
 
     if not user_input or not user_input.strip() or user_input == " ":
             st.warning("Please enter a valid question.")
     else:
-        placeholder = st.empty()
-        try:
-            with placeholder.container():
-                st.info("Sending request to backend...")
+        try:    
+            # Generate title only for the first message of a new conversation
+            is_new_chat = st.session_state['thread_id'] not in st.session_state['chat_titles'] \
+                        or st.session_state['chat_titles'].get(st.session_state['thread_id']) == "New Chat"
+            chat_title = generate_chat_title(user_input.strip()) if is_new_chat else \
+                        st.session_state['chat_titles'].get(st.session_state['thread_id'], "New Chat")
 
-                # Generate title only for the first message of a new conversation
-                is_new_chat = st.session_state['thread_id'] not in st.session_state['chat_titles'] \
-                            or st.session_state['chat_titles'].get(st.session_state['thread_id']) == "New Chat"
-                chat_title = generate_chat_title(user_input.strip()) if is_new_chat else \
-                            st.session_state['chat_titles'].get(st.session_state['thread_id'], "New Chat")
+            st.session_state.history.append(("You", user_input.strip()))
+            with st.chat_message("user"):
+                st.markdown(user_input.strip())
+            with st.chat_message("assistant"):
+                with st.spinner("Thinking..."):
+                    response = requests.post(
+                        API_URL,
+                        json={
+                            "messages": user_input.strip(),
+                            "thread_id": st.session_state.thread_id,
+                            "chat_title": chat_title        # ← send title to backend
+                        },
+                        timeout=TIMEOUT_SECONDS,
+                    )
+                    # Save the title locally in session state too
+                    st.session_state['chat_titles'][st.session_state['thread_id']] = chat_title
 
-                response = requests.post(
-                    API_URL,
-                    json={
-                        "messages": user_input.strip(),
-                        "thread_id": st.session_state.thread_id,
-                        "chat_title": chat_title        # ← send title to backend
-                    },
-                    timeout=TIMEOUT_SECONDS,
-                )
-                # Save the title locally in session state too
-                st.session_state['chat_titles'][st.session_state['thread_id']] = chat_title
+                    response.raise_for_status()
+                    data = response.json()
 
-                response.raise_for_status()
-                data = response.json()
+                    messages_list = data.get("reply", [])
+                    # Safely parse response whether it's a list or string
+                    if isinstance(messages_list, list) and messages_list:
+                        assistant_reply = messages_list[-1].get("content", str(messages_list))
+                    else:
+                        assistant_reply = str(messages_list)
 
-                messages_list = data.get("reply", [])
-                # answer = messages_list[-1].get("content", "No response returned.") if messages_list else "No response returned."
-                # print("============Answers============\n",answer)
-                # Store conversation
-                st.session_state.history.append(("You", user_input.strip()))
-                st.session_state.history.append(("Assistant", messages_list))
-                current_thread=st.session_state['thread_id']
-                
-                if current_thread not in st.session_state['chat_thread']:
-                    st.session_state['chat_thread'].insert(0, current_thread)
-                    st.session_state['chat_titles'][current_thread]=chat_title
+                    st.markdown(assistant_reply)
+
+                    # st.session_state.history.append(("You", user_input.strip()))
+                    st.session_state.history.append(("Assistant", assistant_reply))
+                    current_thread=st.session_state['thread_id']
                     
+                    if current_thread not in st.session_state['chat_thread']:
+                        st.session_state['chat_thread'].insert(0, current_thread)
+                        st.session_state['chat_titles'][current_thread]=chat_title      
                 st.rerun()
         except RequestException as e:
             st.error("Backend request failed.")
             st.exception(e)
         else:
             placeholder = st.empty()
-
-
-# ============================================================
-# Chat History Rendering
-# ============================================================
-
-if st.session_state.history:
-    st.divider()
-    st.subheader("Conversation")
-
-    for speaker, text in st.session_state.history:
-        if speaker == "You":
-            st.markdown(f"**🧑 You:** {text}")
-        else:
-            st.markdown(f"**🤖+ Assistant:** {text}")
-
-# with st.sidebar:
-#     st.info(f"**Current Session Thread ID:**\n`{st.session_state.thread_id}`")
-#     if st.button("Clear Local View & Restart Thread"):
-#         st.session_state.thread_id = str(uuid.uuid4())
-#         st.session_state.messages = []
-#         st.rerun()

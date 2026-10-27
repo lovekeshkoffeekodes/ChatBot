@@ -6,29 +6,15 @@ from app.database import get_db
 
 print("==========START==========")
 
-router = APIRouter(prefix="/chat/stream", tags=["jobs"])
+router = APIRouter(prefix="")
 
 class ChatRequest(BaseModel):
     messages: str
     thread_id: str
     chat_title: str = "New Chat"
 
-
+@router.post("/chat/stream")
 async def ChatStream(request: Request, body: ChatRequest):
-    return {"message": "Hello From Chat Stream"}
-
-router.add_api_route(
-    "",
-    ChatStream,
-    methods=["POST"],
-    status_code=status.HTTP_202_ACCEPTED,
-    name="ChatStream",
-)
-
-
-@router.post("/test")
-async def ChatTest(request: Request, body: ChatRequest):
-    print("=============STEP 1=============")
     print("Request:", body)
 
     compiled_graph = request.app.state.compiled_graph
@@ -97,8 +83,15 @@ async def ChatTest(request: Request, body: ChatRequest):
         "reply": ai_reply
     }
 
+# router.add_api_route(
+#     "/chat/stream",
+#     ChatStream,
+#     methods=["POST"],
+#     status_code=status.HTTP_202_ACCEPTED,
+#     name="ChatStream",
+# )
 
-@router.get("/threads")
+@router.get("/conversations")
 async def get_all_threads(request: Request):
     """Return all conversations from our custom conversations table."""
     async with get_db() as conn:
@@ -106,6 +99,7 @@ async def get_all_threads(request: Request):
             """
             SELECT thread_id, chat_title, created_at
             FROM conversations
+            WHERE is_deleted = FALSE
             ORDER BY created_at DESC
             """
         )
@@ -122,9 +116,7 @@ async def get_all_threads(request: Request):
         ]
     }
 
-
-
-@router.get("/history/{thread_id}")
+@router.get("/conversations/{thread_id}/messages")
 async def get_history(thread_id: str, request: Request):
     """Read chat history from our custom messages table."""
     async with get_db() as conn:
@@ -143,7 +135,7 @@ async def get_history(thread_id: str, request: Request):
             """
             SELECT role, content, created_at
             FROM messages
-            WHERE conversation_id = %s
+            WHERE conversation_id = %s 
             ORDER BY created_at ASC
             """,
             [conversation_id]
@@ -156,4 +148,79 @@ async def get_history(thread_id: str, request: Request):
             {"role": m[0], "content": m[1], "created_at": str(m[2])}
             for m in messages
         ]
+    }
+
+# --- Pydantic model for updating title ---
+class UpdateTitleRequest(BaseModel):
+    chat_title: str
+
+@router.patch("/conversations/{thread_id}")
+async def update_chat_title(thread_id: str, body: UpdateTitleRequest):
+    """Edit the chat title for a specific thread."""
+    async with get_db() as conn:
+        result = await conn.execute(
+            """
+            UPDATE conversations 
+            SET chat_title = %s 
+            WHERE thread_id = %s AND is_deleted = FALSE
+            RETURNING id
+            """,
+            [body.chat_title, thread_id]
+        )
+        conversation = await result.fetchone()
+
+        if conversation is None:
+            return {"detail": "Conversation not found or has been deleted"}, status.HTTP_404_NOT_FOUND
+
+    return {
+        "message": "Chat title updated successfully",
+        "thread_id": thread_id,
+        "chat_title": body.chat_title
+    }
+
+@router.delete("/conversations/{thread_id}")
+async def soft_delete_conversation(thread_id: str):
+    """Soft delete a conversation by setting is_deleted to TRUE."""
+    async with get_db() as conn:
+        result = await conn.execute(
+            """
+            UPDATE conversations 
+            SET is_deleted = TRUE 
+            WHERE thread_id = %s AND is_deleted = FALSE
+            RETURNING id
+            """,
+            [thread_id]
+        )
+        conversation = await result.fetchone()
+
+        if conversation is None:
+            return {"detail": "Conversation not found or already deleted"}, status.HTTP_404_NOT_FOUND
+
+    return {
+        "message": "Conversation soft deleted successfully",
+        "thread_id": thread_id
+    }
+
+@router.get("/conversations/{thread_id}")
+async def get_conversation_details(thread_id: str, request: Request):
+    """Return metadata details for a single conversation thread."""
+    async with get_db() as conn:
+        row = await conn.execute(
+            """
+            SELECT thread_id, chat_title, created_at, is_deleted
+            FROM conversations
+            WHERE thread_id = %s
+            """,
+            [thread_id]
+        )
+        conversation = await row.fetchone()
+
+        if conversation is None:
+            return {"detail": "Conversation not found"} # Can also raise HTTPException(status_code=404)
+
+    return {
+        "thread_id": conversation[0],
+        "chat_title": conversation[1],
+        "created_at": str(conversation[2]),
+        "is_deleted": conversation[3]
     }

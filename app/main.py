@@ -36,8 +36,8 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="FastAPI Backend", debug=False, lifespan=lifespan)
 
-app.include_router(api_service.router, prefix="/api/v1")
+app.include_router(api_service.router)
 
-@app.get("/")
-def home():
+@app.get("/health")
+def health():
     return {"message": "Backend is running from main!"}
