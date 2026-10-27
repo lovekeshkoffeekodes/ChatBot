@@ -2,4 +2,4 @@
 .env
 
 chatbot.db
-
+.src\

@@ -1,17 +1,42 @@
 """FastAPI application entrypoint."""
-
-from collections.abc import AsyncIterator
+import os
+from app import api_service
 from contextlib import asynccontextmanager
-from typing import Literal
+from psycopg.rows import dict_row
 
-from fastapi import FastAPI, status
-from fastapi.responses import JSONResponse
+from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from fastapi import FastAPI
+from psycopg import AsyncConnection
+from app.graphs import graph
 
-from app.api.v1 import jobs
+# --- 2. Manage Database Connection Pool via FastAPI Lifespan ---
+# db_pool = None
+# checkpointer = None
+# compiled_graph = None
 
-app = FastAPI(title="FastAPI Backend", debug=False)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global db_pool, checkpointer, compiled_graph
+    
+    # Establish async connection to PostgreSQL
+    # Crucial: Must use autocommit=True and dict_row for LangGraph checkpoint setup
+    conn_string = os.getenv("DATABASE_URL")
+    db_pool = await AsyncConnection.connect(conn_string, autocommit=True, row_factory=dict_row)
+    
+    # Initialize and set up the PostgreSQL checkpointer
+    checkpointer = AsyncPostgresSaver(db_pool)
+    await checkpointer.setup() # Automatically creates required LangGraph tables if they don't exist
+    
+    # Compile the graph globally once
+    app.state.compiled_graph = graph.compile(checkpointer=checkpointer)
+    
+    yield
+    # Clean up on shutdown
+    await db_pool.close()
 
-app.include_router(jobs.router, prefix="/api/v1")
+app = FastAPI(title="FastAPI Backend", debug=False, lifespan=lifespan)
+
+app.include_router(api_service.router, prefix="/api/v1")
 
 @app.get("/")
 def home():
