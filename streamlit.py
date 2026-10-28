@@ -108,112 +108,72 @@ st.sidebar.markdown("---")
 st.sidebar.header('My Conversations')
 
 for thread_id in list(st.session_state['chat_thread']):
-    # 1. Look up the title, fallback to the string version of UUID if not found
-    button_label = st.session_state['chat_titles'].get(thread_id, str(thread_id))
-    is_active = (thread_id == st.session_state['thread_id'])
-    button_type = "primary" if is_active else "secondary" 
-    col_title, col_menu = st.sidebar.columns([0.75, 0.25])
+    title = st.session_state['chat_titles'].get(thread_id, "New Chat")
+    is_active = (thread_id == st.session_state['thread_id']) 
+    # Truncate long titles visually so they don't break sidebar layout
+    label = title if len(title) <= 22 else title[:21] + "…"
 
-    with col_title:
-        if st.sidebar.button(button_label, key=str(thread_id), type=button_type):
-            st.session_state['thread_id']= thread_id 
-            st.session_state['menu_thread_id'] = None
-            st.session_state['editing_thread_id'] = None
-            st.session_state['deleting_thread_id'] = None
+    # Create columns: 75% for the chat select button, 25% for the popover trigger
+    row, menu = st.sidebar.columns([0.75, 0.25], vertical_alignment="center")
+
+    with row:
+        if st.button(
+            label, 
+            key=f"conv_{thread_id}", 
+            type="primary" if is_active else "secondary", 
+            use_container_width=True, 
+            help=title
+        ):
+            st.session_state['thread_id'] = thread_id
             try:
-                response = requests.get(f"http://127.0.0.1:8000/conversations/{st.session_state['thread_id']}/messsages")
+                response = requests.get(f"http://127.0.0.1:8000/conversations/{thread_id}/messsages")
                 messages = response.json().get("messages", [])
 
                 temp_message=[]
 
                 for msg in messages:
-                    msg_type = msg.get('type', '').lower()
                     msg_role = msg.get('role', '').lower()
-
-                    is_user = msg_type in ['human', 'user'] or msg_role in ['human', 'user']
+                    is_user = msg_role in ['human', 'user']
                     speaker = 'You' if is_user else 'Assistant'
-
                     temp_message.append((speaker, msg.get('content', '')))
 
                 st.session_state['history']= temp_message
             except RequestException:
                 st.error("Failed to load chat history.")
             st.rerun()
-    with col_menu:
-        if st.button("...", key=f"menu_btn_{thread_id}", help="Options"):
-            # Toggle the menu state for this specific thread
-            if st.session_state.get('menu_thread_id') == thread_id:
-                st.session_state['menu_thread_id'] = None
-            else:
-                st.session_state['menu_thread_id'] = thread_id
-                st.session_state['editing_thread_id'] = None
-                st.session_state['deleting_thread_id'] = None
-            st.rerun()
 
-    # If this thread's "..." menu is opened, render options directly below it
-    if st.session_state.get('menu_thread_id') == thread_id:
-        
-        # 1. Renaming state
-        if st.session_state.get('editing_thread_id') == thread_id:
-            new_title = st.sidebar.text_input("New title", value=button_label, key=f"input_rename_{thread_id}")
-            col_save, col_cancel = st.sidebar.columns(2)
-            with col_save:
-                if st.sidebar.button("Save", key=f"save_title_{thread_id}", use_container_width=True):
+    with menu:
+        # Everything inside the popover stays hidden until "..." is clicked
+        with st.popover("⋯", help="Options"):
+            new_title = st.text_input("Rename Chat", value=title, key=f"title_{thread_id}", max_chars=100)
+            
+            if st.button("💾 Save", key=f"save_{thread_id}", use_container_width=True):
+                if new_title.strip() and new_title != title:
                     try:
                         patch_url = f"http://127.0.0.1:8000/conversations/{thread_id}"
                         resp = requests.patch(patch_url, json={"chat_title": new_title.strip()})
                         if resp.status_code == 200:
                             st.session_state['chat_titles'][thread_id] = new_title.strip()
-                            st.session_state['menu_thread_id'] = None
-                            st.session_state['editing_thread_id'] = None
                             st.success("Title updated!")
                             st.rerun()
                     except RequestException:
-                        st.sidebar.error("Failed to update.")
-            with col_cancel:
-                if st.sidebar.button("Cancel", key=f"cancel_rename_{thread_id}", use_container_width=True):
-                    st.session_state['editing_thread_id'] = None
-                    st.rerun()
-
-        # 2. Delete confirmation state
-        elif st.session_state.get('deleting_thread_id') == thread_id:
-            st.sidebar.warning("Delete this chat?")
-            col_yes, col_no = st.sidebar.columns(2)
-            with col_yes:
-                if st.sidebar.button("Yes", key=f"del_yes_{thread_id}", use_container_width=True):
-                    try:
-                        delete_url = f"http://127.0.0.1:8000/api/v1/chat/stream/conversations/{thread_id}"
-                        response = requests.delete(delete_url)
-                        if response.status_code == 200:
-                            st.session_state['chat_thread'].remove(thread_id)
-                            if thread_id in st.session_state['chat_titles']:
-                                del st.session_state['chat_titles'][thread_id]
-                            st.session_state['menu_thread_id'] = None
-                            st.session_state['deleting_thread_id'] = None
-                            if st.session_state['thread_id'] == thread_id:
-                                reset_chat()
-                            st.success("Deleted.")
-                            st.rerun()
-                    except RequestException:
-                        st.sidebar.error("Failed to delete.")
-            with col_no:
-                if st.sidebar.button("No", key=f"del_no_{thread_id}", use_container_width=True):
-                    st.session_state['deleting_thread_id'] = None
-                    st.rerun()
-
-        # 3. Default menu options (Edit / Delete)
-        else:
-            col_opt1, col_opt2 = st.sidebar.columns(2)
-            with col_opt1:
-                if st.sidebar.button("✏️ Edit", key=f"opt_edit_{thread_id}", use_container_width=True):
-                    st.session_state['editing_thread_id'] = thread_id
-                    st.rerun()
-            with col_opt2:
-                if st.sidebar.button("🗑️ Delete", key=f"opt_del_{thread_id}", use_container_width=True):
-                    st.session_state['deleting_thread_id'] = thread_id
-                    st.rerun()
-        
-        st.sidebar.markdown("---")
+                        st.error("Failed to update title.")
+                        
+            if st.button("🗑️ Delete", key=f"del_{thread_id}", use_container_width=True):
+                try:
+                    delete_url = f"http://127.0.0.1:8000/conversations/{thread_id}"
+                    response = requests.delete(delete_url)
+                    if response.status_code == 200:
+                        st.session_state['chat_thread'].remove(thread_id)
+                        if thread_id in st.session_state['chat_titles']:
+                            del st.session_state['chat_titles'][thread_id]
+                        
+                        # If active chat was deleted, reset to a clean slate
+                        if st.session_state['thread_id'] == thread_id:
+                            reset_chat()
+                        st.rerun()
+                except RequestException:
+                    st.error("Failed to delete conversation.")
 
 # ============================================================
 # Chat History Rendering (Native Chat Bubbles)
