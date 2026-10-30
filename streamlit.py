@@ -1,9 +1,10 @@
 import streamlit as st
 import requests
-from requests.exceptions import RequestException
+from requests.exceptions import RequestException, ReadTimeout
 import uuid
 from langchain_groq import ChatGroq
 import os
+
 # ============================================================
 # Configuration
 # ============================================================
@@ -102,6 +103,20 @@ if "messages" not in st.session_state:
 # ============================================================
 
 st.sidebar.title("Weave")
+# ── PDF Upload ──────────────────────────
+uploaded_file = st.sidebar.file_uploader("📄 Upload PDF", type="pdf")
+if uploaded_file is not None:
+    with st.sidebar.status("Processing PDF..."):
+        response = requests.post(
+            "http://127.0.0.1:8000/upload-pdf",
+            files={"file": (uploaded_file.name, uploaded_file.read(), "application/pdf")}
+        )
+        if response.status_code == 200:
+            st.sidebar.success("✅ PDF ready! You can now ask questions.")
+        else:
+            st.sidebar.error("❌ Failed to process PDF.")
+st.sidebar.markdown("---")
+# ────────────────────────────────────────
 if st.sidebar.button('New Chat'):
     reset_chat()
 st.sidebar.markdown("---")
@@ -126,7 +141,7 @@ for thread_id in list(st.session_state['chat_thread']):
         ):
             st.session_state['thread_id'] = thread_id
             try:
-                response = requests.get(f"http://127.0.0.1:8000/conversations/{thread_id}/messsages")
+                response = requests.get(f"http://127.0.0.1:8000/conversations/{thread_id}/messages")
                 messages = response.json().get("messages", [])
 
                 temp_message=[]
@@ -154,11 +169,16 @@ for thread_id in list(st.session_state['chat_thread']):
                         resp = requests.patch(patch_url, json={"chat_title": new_title.strip()})
                         if resp.status_code == 200:
                             st.session_state['chat_titles'][thread_id] = new_title.strip()
+
+                            # Clean up text input state to prevent sticking
+                            if f"{thread_id}" in st.session_state:
+                                del st.session_state[f"title_{thread_id}"]
+
                             st.success("Title updated!")
                             st.rerun()
                     except RequestException:
                         st.error("Failed to update title.")
-                        
+                       
             if st.button("🗑️ Delete", key=f"del_{thread_id}", use_container_width=True):
                 try:
                     delete_url = f"http://127.0.0.1:8000/conversations/{thread_id}"
@@ -167,7 +187,11 @@ for thread_id in list(st.session_state['chat_thread']):
                         st.session_state['chat_thread'].remove(thread_id)
                         if thread_id in st.session_state['chat_titles']:
                             del st.session_state['chat_titles'][thread_id]
-                        
+
+                        # Clean up text input state for deleted thread
+                        if f"title_{thread_id}" in st.session_state:
+                            del st.session_state[f"title_{thread_id}"]
+
                         # If active chat was deleted, reset to a clean slate
                         if st.session_state['thread_id'] == thread_id:
                             reset_chat()
@@ -233,8 +257,10 @@ if user_input := st.chat_input("Ask your question...", max_chars=MAX_INPUT_LENGT
                         st.session_state['chat_thread'].insert(0, current_thread)
                         st.session_state['chat_titles'][current_thread]=chat_title      
                 st.rerun()
+        except ReadTimeout:
+            st.error("⏳ The assistant is taking too long. Please try again.")
         except RequestException as e:
-            st.error("Backend request failed.")
+            st.error("❌ Backend request failed.")
             st.exception(e)
         else:
             placeholder = st.empty()

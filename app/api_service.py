@@ -1,8 +1,11 @@
 
-from fastapi import APIRouter, status, Request
+from fastapi import APIRouter, status, Request,UploadFile, File,HTTPException
 from pydantic import BaseModel
 from langchain_core.messages import HumanMessage
 from app.database import get_db
+import tempfile
+import os
+from app.rag import process_pdf  
 
 print("==========START==========")
 
@@ -224,3 +227,29 @@ async def get_conversation_details(thread_id: str, request: Request):
         "created_at": str(conversation[2]),
         "is_deleted": conversation[3]
     }
+
+@router.post("/upload-pdf")
+async def upload_pdf(file: UploadFile = File(...)):
+    """Receive a PDF, process it, and store embeddings in PGVector."""
+
+    if file.content_type != "application/pdf":
+        raise HTTPException(
+            status_code=400,
+            detail="Only PDF files are allowed."
+        )
+    
+    # Step 1: Read the uploaded file bytes
+    content = await file.read()
+
+    # Step 2: Save to a temp file (PyPDFLoader needs a real path)
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+        tmp.write(content)
+        tmp_path = tmp.name
+    try:
+        # Step 3: Process PDF → embed → store in PGVector
+        process_pdf(tmp_path, filename=file.filename)
+    finally:
+        # Step 4: Always delete temp file, even if error occurs
+        os.unlink(tmp_path)
+
+    return {"message": "PDF processed successfully", "filename": file.filename}
